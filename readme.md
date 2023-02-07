@@ -18,6 +18,7 @@ Currently, the following structs are mostly mapped out:
 - JOINT_HIERARCHY (bones) 
 - VRAM_DESC (texture)
 - VRAM_DESC_TABLE
+- TEXTURE_TABLE
 
  Other structs contents can be explored only with a generic "Test" scanner.
  
@@ -26,3 +27,5 @@ Currently, the following structs are mostly mapped out:
  ![redshirt](https://i.imgur.com/Kwyg327.jpg)
  
  You can also potentially do things like disable extra vertex components that are causing issues with [model editing](https://github.com/alphazolam/fmt_nd_pak)
+ 
+ Thanks to icemesh for the help

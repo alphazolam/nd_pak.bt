@@ -29,6 +29,8 @@ local uint PFixupAddrs[numPointerFixups] <hidden=1>;
 local uint PFixupPage1s[numPointerFixups] <hidden=1>;
 local uint PFixupPage2s[numPointerFixups] <hidden=1>;
 
+int find(string str, string term) { return (RegExSearch(str, term, matchSize, 0)); }
+
 ubyte detectedString(uint tell) {
     local string str = ReadString(tell);
     if (sizeof(str) > 6 && RegExSearch(str, "[a-zA-Z]{3}", matchSize, 0) != -1)
@@ -209,6 +211,8 @@ void quicksort( int low, int high, uint array[], uint array2[] ) {
         quicksort( i, high, array, array2 ); 
 }
 
+FSeek(Header.m_pointerFixUpTableOffset);
+
 struct //0xC
 {
 	uint32 m_pageEntryNumber;						// 0x0 0, 1, 2 ...
@@ -224,7 +228,7 @@ struct //0xC
         }
         FSeek(startof(this)+12);
     }
-} PointerFixUpPage;//[Header.m_numPointerFixUpPages] <optimize=false>;
+} PointerFixUpPage[Header.m_numPointerFixUpPages] <optimize=false>;
 
 
 quicksort(0, numPointerFixups-1, PFixupAddrs, PFixupPage2s); //Sort PointerFixups by their addresses
@@ -417,6 +421,50 @@ typedef struct  {
     }
 } PakLoginTable;
 
+typedef struct {
+    pointerFixup startOffs;
+    uint64 reserved;
+    FSeek(startOffs.absOffset);
+    pointerFixup listOffs;
+    pointerFixup firstListEntryOffs;
+    pointerFixup midListEntryOffs;
+    FSeek(listOffs.absOffset);
+    uint b, c, d, e;
+    local ushort numJSegments = Page[jointsPageId].PageEntry[jointsDescId].Item.Joints.numJSegments;
+    
+    FSeek(midListEntryOffs.absOffset);
+    struct {
+        for (w=0; w<numJSegments; w++)
+            struct {
+                local ubyte idx <hidden=1> = w;
+                pointerFixup boneMapOffs;
+                FSeek(boneMapOffs.absOffset);
+                local ubyte boneCount;
+                while(ReadUShort() != 0) {
+                    ubyte boneID <read=ReadBoneIDByte>;
+                    boneCount++;
+                }
+                FSeek(startof(this)+8);
+            } BoneMap;
+    } BoneMaps;
+
+    FSeek(firstListEntryOffs.absOffset);
+    struct {
+        for (w=0; w<numJSegments; w++)
+            struct {
+                local ubyte idx <hidden=1> = w;
+                pointerFixup weightsOffs;
+                FSeek(weightsOffs.absOffset);
+                ushort value[BoneMaps.BoneMap[w].boneCount] <open=true, optimize=false>;
+                FSkip(-1); BLANK blank;
+                FSeek(startof(this)+8);
+            } BoneValue;
+    } BoneValues;
+
+    
+   // pointerFixup ptr[16] <optimize=false>;
+} SkelFlipData;
+
 typedef struct  //0x20 
 {
 	StringRead m_itemNameOffset(start);	//0x0 item name. relative offset PakPageHeader + m_itemNameOffset;
@@ -449,6 +497,9 @@ typedef struct  //0x20
             break;
         case "PAK_LOGIN_TABLE":
             struct PakLoginTable PakLogin;
+            break;
+        case "SKELETON_FLIPDATA":
+            struct SkelFlipData FlipData;
             break;
         default:
             break;
@@ -659,7 +710,7 @@ typedef struct {
             float rotation[4];
             float position[4];
         } transform[JointsInfo.transformCount] <optimize=false, read=ReadBoneTransform>;
-    } transforms;
+    } transforms  <fgcolor=cLtPurple>;
     
     //maybe rotation mats
     struct {
@@ -670,22 +721,26 @@ typedef struct {
             local ushort idx <hidden=true> = (FTell() - startof(BoneFloats[0])) / 48;
             float ukn, ukn, ukn, ukn, ukn, ukn, ukn, ukn, ukn, ukn, ukn, ukn;
         } BoneFloats [nodeCount] <optimize=false, read=readBoneFloats>;
-    } floats;
+    } floats  <fgcolor=cLtYellow>;
     
 
     FSeek(transforms.JointsInfo.ukn[3] + startof(transforms));
     struct {
-        uint ukn[6];
-        uint hashes[(ukn[5]-36)/4];
-        FSeek(startof(this)+ukn[5]);
+        uint ukn;
+        uint headerSize;
+        uint uknSize0;
+        uint uknSize1;
+        uint uknSize2;
+        uint hashesPlusHeaderSz;
+        uint hashes[(hashesPlusHeaderSz-36)/4];
+        FSeek(startof(this)+hashesPlusHeaderSz);
         
         struct boneParentInfo {
             local ushort idx <hidden=true> = (FTell() - startof(bones[0])) / 16;
-            int groupID;
+            int groupID; //???
             int parentID;
             int childID;
-            int ukn;
-            //local ubyte invalid;
+            int chainID;
         } bones [nodeCount] <optimize=false, read=ReadBoneParentInfo>;
 
         /*local uint nonHelperCount = 1;
@@ -700,7 +755,7 @@ typedef struct {
                 nonHelperCount++;
         }*/
 
-    } parenting;
+    } parenting <fgcolor=cLtRed>;
     
     FSeek(jsInfoOffset.absOffset);
     struct {
@@ -718,7 +773,7 @@ typedef struct {
             struct StringRead name(start);
             //transforms.transform[k].name = name.str;
         }
-    } names;
+    } names  <fgcolor=cLtGreen>;
 
     FSeek(startof(namesOffset)+8);
     
@@ -1110,7 +1165,7 @@ typedef struct //0xB0;
                         for (w=0; w<numFloats; w++)
                             float value;
                         FSeek(startof(this)+24);
-                    } param[uknData[1]] <optimize=false, read=ReadMaterialParam, name=ReadMaterialParamName>;
+                    } param[uknData[1]] <optimize=false, read=ReadMaterialParam, name=ReadMaterialParamName, write=WriteMaterialParam>;
                 } shaderParams;
             
             FSeek(shaderOptions2Offs.absOffset);
@@ -1171,13 +1226,19 @@ typedef struct //0xB0;
     string ReadBoneWeightValue(boneWeight &b) {
         return ReadBoneWeight(b.weight);
     }    
-
-    string ReadBoneWeightName(boneWeight &b) {
-        if (jointsDescId != -1 && exists(Page[jointsPageId].PageEntry[jointsDescId].Item.Joints.names.name[b.boneID]))
-            return Page[jointsPageId].PageEntry[jointsDescId].Item.Joints.names.name[b.boneID].str;
-        local string s; SPrintf(s, "%i", b.boneID);
+    
+    string GetBoneNameFromID(ushort id) {
+        if (jointsDescId != -1 && exists(Page[jointsPageId].PageEntry[jointsDescId].Item.Joints.names.name[id]))
+            return Page[jointsPageId].PageEntry[jointsDescId].Item.Joints.names.name[id].str;
+        local string s; SPrintf(s, "%i", id);
         return s;
     }
+
+    string ReadBoneWeightName(boneWeight &b) {
+        return GetBoneNameFromID((ushort)b.boneID);
+    }
+
+    string ReadBoneIDByte(ubyte id) { return GetBoneNameFromID((ushort)id);}; 
 
     string ReadWeightVertName(weightVert &v) {
         return ReadBoneWeight(v.weightTotal);
@@ -1204,6 +1265,29 @@ typedef struct //0xB0;
         for (w=1; w<m.numFloats; w++)
             SPrintf(ss, "%s, %g", ss, m.value[w]);
         return ss;
+    }
+
+    void WriteMaterialParam(materialParam &m, string array) {
+        local ubyte q; 
+        local string fmtString;
+        local string FMT = "%g";
+        if (array[0] == 91)
+            fmtString += "[";
+        if (find(array, ",") == -1) {
+            for (q=0; q<m.numFloats-1; q++)
+                fmtString += FMT + " ";
+            fmtString += FMT;
+        } else {
+            for (q=0; q<m.numFloats-1; q++)
+                fmtString += FMT + ", ";
+            fmtString += FMT;
+        }
+        if (m.numFloats == 3) 
+            SScanf(array, fmtString, m.value[0], m.value[1], m.value[2]);
+        else if (m.numFloats == 2) 
+            SScanf(array, fmtString, m.value[0], m.value[1]);
+        else
+            SScanf(array, fmtString, m.value[0]);
     }
 
 for (i=0; i<Header.m_pageCt; i++) {
