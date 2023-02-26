@@ -1,7 +1,7 @@
 # nd_pak.bt
 by alphaZomega
 
-This is a template for reading Naughty Dog pak files, specifically for Uncharted 4 on PC.
+This is a template for reading Naughty Dog pak files, specifically for Uncharted 4 and The Last of Us Part II.
 Support for more games may be added in the future.
 
 # Installation / Usage
@@ -13,12 +13,15 @@ Support for more games may be added in the future.
 6. Explore pak file contents in page\[0] and page\[1] -> Item
 
 
-Currently, the following structs are mostly mapped out:
+Currently, the following page entry types are supported:
 - GEOMETRY_1 (mesh)
 - JOINT_HIERARCHY (bones) 
 - VRAM_DESC (texture)
 - VRAM_DESC_TABLE
 - TEXTURE_TABLE
+- PAK_LOGIN_TABLE
+- SKELETON_FLIPDATA
+- EFFECT_TABLE
 
  Other structs contents can be explored only with a generic "Test" scanner.
  
@@ -26,6 +29,7 @@ Currently, the following structs are mostly mapped out:
  ![params](https://i.imgur.com/lnaCh93.png)
  ![redshirt](https://i.imgur.com/Kwyg327.jpg)
  
- You can also potentially do things like disable extra vertex components that are causing issues with [model editing](https://github.com/alphazolam/fmt_nd_pak)
+ Swapping what texture is loaded for a texture slot is possible by swapping their offsets.
+ You can also do things like disable extra vertex components that are causing issues with [model editing](https://github.com/alphazolam/fmt_nd_pak)
  
  Thanks to icemesh for the help
