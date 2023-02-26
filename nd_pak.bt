@@ -3,24 +3,24 @@
 //
 //      File: nd_pak.bt
 //   Authors: alphaZomega
-//   Version: 0.31
+//   Version: 0.4
 //   Purpose: Reads Naughty Dog pak files
 //  Category: 
 // File Mask: *.pak
 //  ID Bytes: 79 0A 00 00
-//   History: February 21, 2023
+//   History: February 26, 2023
 //    Thanks: icemesh
 //------------------------------------------------
 LittleEndian();
 BitfieldDisablePadding();
 
-local ubyte DoTest <hidden=true> = false; //Creates a `Test` struct for each unknown ResPageEntry
-
-local int i <hidden=true>, j <hidden=true>, k <hidden=true>, l <hidden=true>, w <hidden=true>, matchSize <hidden=true>, temp <hidden=true>;
+local int i <hidden=true>, j <hidden=true>, k <hidden=true>, l <hidden=true>, w <hidden=true>, matchSize <hidden=true>, temp <hidden=true>, theColor <hidden=true>;
 local int jointsPageId <hidden=1> = -1, jointsDescId <hidden=1> = -1;
 local string s <hidden=true>;
 local uint start <hidden=true>;
-local ubyte isTLOU2 = false;
+local uint geoStart <hidden=true>;
+local ubyte isTLOU2 <hidden=true> = false;
+local ubyte isModded <hidden=true> = false;
 
 local uint numPointerFixups <hidden=1> = ReadUInt(ReadUInt(28)+8);
 local ushort PFMaxSize <hidden=1> = 50;
@@ -566,9 +566,10 @@ typedef struct  //0x20
 {
 	StringRead m_itemNameOffset(start);	//0x0 item name. relative offset PakPageHeader + m_itemNameOffset;
 	StringRead m_itemTypeOffset(start);	//0x8 item type name. relative offset PakPageHeader + m_itemTypeOffset; PM_COLLECTION_2 || RAW_DATA etc
-	uint32 m_unkNumber;							    //0x10 no idea what this is used for seems to vary from entry to entry
+	uint32 m_unkNumber;	
+    
     if (ReadUInt(FTell()+12)==74565) {
-        uint32  m_unused2[7] <bgcolor=cYellow>;
+        uint32  m_unused[7] <bgcolor=cYellow>;
         isTLOU2 = true;
     } else {
         uint32 m_unused[3] <bgcolor=cYellow>;				//0x14 always 00 01 23 45 
@@ -576,7 +577,8 @@ typedef struct  //0x20
 
     switch(m_itemTypeOffset.str) {
         case "GEOMETRY_1":
-            struct GEOMETRY_1 Geometry;
+            geoStart = FTell();
+            struct GEOMETRY_1 Geometry <size=112>;
             break;
         case "JOINT_HIERARCHY":
             jointsPageId = i;
@@ -605,12 +607,8 @@ typedef struct  //0x20
     }
     
     FSeek(startof(m_unused)+sizeof(m_unused));
-    if (DoTest && ReadUInt64(FTell()+20) != 320254236500805) {
-        local uint mySize <hidden=true> = FTell();
-        seekToNextOf(320254236500805, true);
-        if (FTell() < FileSize()-8) {
-            mySize = FTell() - mySize;
-            FSkip(-mySize);
+    if (ReadUInt64(FTell()+20) != 320254236500805) {
+        if (FTell() < FileSize()-28) {
             struct TEST {
                 while(ReadUInt64(FTell()+20) != 320254236500805 && ReadUInt64(FTell()+18) != 320254236500805) { //ctr < 600 && 
                     if (detectedString(FTell())) {
@@ -627,7 +625,7 @@ typedef struct  //0x20
                     } else
                         int uknInt;
                 }
-            } Test <size=GetSizeTest>;
+            } Test <size=28>;
         }
     }
 } ResItem <read=ReadResItem>;//, name=ReadResItemName>;
@@ -1047,6 +1045,18 @@ typedef struct
     int sizeLODDESCS(LODDESCS &l) { return m_LODCount*8; }
 
 
+string GetSFix(int x, ubyte exp) {
+    local int c = Abs(x);
+    local byte sign = 1; 
+    if (x < 0) {
+        c = x - 1;
+        c = ~c;
+        sign = -1;
+    }
+    SPrintf(s, "%g", ( (1.0 * c) / Pow(2, exp) ) * sign);
+    return s;
+}
+
 typedef struct //0xB0; 
 {
     struct {
@@ -1055,13 +1065,14 @@ typedef struct //0xB0;
             float bbox[8];
             StringRead      m_name(0);
             uint64          ukn;
-            pointerFixup    uknOffs;
+            pointerFixup    m_pStreamDesc;
             uint64          ukn;
             pointerFixup    m_pIndexes;
-            pointerFixup    uknOffs3;
+            pointerFixup    shaderDescOffs;
             uint64          ukn;
-            pointerFixup    m_pStreamDesc;
-            uint64          ukn, ukn, ukn;
+            pointerFixup    skinDataOffs;
+            uint64          ukn, ukn;
+            pointerFixup    normalsRecalcOffset;
             StringRead      uknString(0);
 	        int32		    m_numVertexes;
 	        int32	    	m_numIndexes;
@@ -1110,19 +1121,8 @@ typedef struct //0xB0;
         }
     } SubmeshInfo;
     
-    typedef struct {
-        ubyte m_unk;
-        ubyte m_unk2;
-        ubyte m_stride2;
-        enum <byte> ComponentType {
-            Vector3F_0 = 6,
-            Vector3F_1 = 12,
-            Vector4Half = 10,
-            NormalsTangents = 31,
-            UVs = 34,
-            Indices = 42,
-        } m_floatType;
-    } FloatDesc <read=ReadFloatDesc>;
+
+
     
     typedef struct  {
         uint m_unkPtr; //FloatDesc
@@ -1137,10 +1137,62 @@ typedef struct //0xB0;
     local ubyte foundNormals <hidden=true>;
     local ubyte foundUV1 <hidden=true>;
 
-    
-    if (!isTLOU2) {
-        for (j=0; j<SubmeshInfo.m_numStreamSource; j++) {
-            struct StreamDesc {
+
+    for (j=0; j<SubmeshInfo.m_numStreamSource; j++) {
+        struct StreamDesc {
+            if (isTLOU2) {
+                pointerFixup m_bufferOffset;
+                uint numVerts;
+                uint bitStride;
+                uint bufferSize;
+                struct T2FloatDesc {
+                    enum <byte> T2ComponentType {
+                        T2_PositionsF = 0,
+                        T2_UVs = 1,
+                        T2_Normals = 2,
+                        T2_Tangents = 3,
+                        T2_UV2s = 11,
+                        T2_Positions_40b = 64,
+                        Unk_2x_27b = 65,
+                        Unk_1x_32b = 130,
+                        Unk_1x_13b = 68,
+                        Unk_0x_0b = 70,
+                        T2_UVs_ukn0 = 75,
+                        T2_UVs_ukn1 = 76,
+                        
+                    } m_floatType;
+                    ubyte m_unk2;
+                    ubyte m_unk3 : 4; //ComponentType floatType : 4;
+                    ubyte m_stride : 4;
+                    //local ubyte stride <hidden=0> = (uint)(bufferSize/numVerts);
+                    ubyte m_unk4;
+                    //ComponentType floatType2 : 4;
+                } T2compInfo;
+                ubyte sizes[4];
+                ubyte ukn[4];
+                
+                float qScale[4];
+                float qOffs[4];
+                
+                FSeek(m_bufferOffset.absOffset);
+                SetBackColor((Random(255)<<16) | (Random(255)<<8) | (Random(255)));
+                    
+                if (T2compInfo.m_stride)
+                    struct TLOU2Vert {
+                        if (T2compInfo.m_floatType == 0) {
+                            float X, Y, Z;
+                        } else {
+                            uint64 x : sizes[0];
+                            uint64 y : sizes[1];
+                            uint64 z : sizes[2];
+                            uint64 w : sizes[3];
+                        }
+                        //FSeek(startof(this)+T2compInfo.m_stride);
+                    } vertices[numVerts] <optimize=true, read=ReadTLOU2Vert>;
+                SetBackColor(cNone);
+                
+                FSeek(startof(this)+64);
+            } else {
                 ubyte m_numAttributes;
                 ubyte m_unk;
                 ushort m_stride;
@@ -1150,7 +1202,19 @@ typedef struct //0xB0;
                 
                 pointerFixup compInfoOffs;
                 FSeek(compInfoOffs.absOffset);
-                struct FloatDesc compInfo;
+                struct FloatDesc {
+                    ubyte m_unk;
+                    ubyte m_unk2;
+                    ubyte m_stride2;
+                    enum <byte> ComponentType {
+                        Vector3F_0 = 6,
+                        Vector3F_1 = 12,
+                        Vector4Half = 10,
+                        NormalsTangents = 31,
+                        UVs = 34,
+                        Indices = 42,
+                    } m_floatType;
+                } compInfo <read=ReadFloatDesc>;
                 FSeek(startof(compInfoOffs)+8);
                 
                 pointerFixup m_bufferOffset;
@@ -1191,84 +1255,98 @@ typedef struct //0xB0;
                         if (m_stride == 12 && j == 0) {
                             struct {
                                 float x, y, z; 
-                            } positions[SubmeshInfo.m_numVertexes] <fgcolor=cGreen>;
+                            } positions[SubmeshInfo.m_numVertexes];
                         } else
                             uint vertices[SubmeshInfo.m_numVertexes] <fgcolor=cRed>;
                         break;
                 }
-                
                 FSeek(startof(m_bufferOffset)+8);
-            } streamDesc <read=ReadStreamDesc>;
-        }
-        
-        //unknown
-        if (SubmeshInfo.normalsRecalcOffset.offset) {
-            FSeek(SubmeshInfo.normalsRecalcOffset.absOffset);
-            struct {
-                uint numVerts;
-                uint uknInt2;
-                pointerFixup ptr1;
-                pointerFixup ptr2;
-                pointerFixup ptr3;
-                pointerFixup ptr4;
-                FSeek(ptr1.absOffset);
-                struct {
-                    ushort vertIndex[numVerts];
-                } ptr1Indices  <fgcolor=cLtRed>;
-                FSeek(ptr2.absOffset);
-                struct {
-                    ushort vertIndex[numVerts];
-                } ptr2Indices  <fgcolor=cLtBlue>;
-                FSeek(ptr3.absOffset);
-                struct {
-                    ushort vertIndex[numVerts];
-                } ptr3Indices  <bgcolor=cLtGreen>;
-                FSeek(ptr4.absOffset);
-                struct {
-                    ushort vertIndex[numVerts];
-                } ptr4Indices  <bgcolor=cLtYellow>;
-                FSeek(startof(this)+40);
-            } NormalsRecalculation <size=40>;
-        }
-        
-        //weights
-        if (SubmeshInfo.skinDataOffs.offset) {
-            FSeek(SubmeshInfo.skinDataOffs.absOffset);
-            struct {
-                uint ukn, weightCount, ukn;
-                ushort uknShort, uknShort;
-                pointerFixup indicesOffs;
-                pointerFixup weightsOffs;
-                FSeek(weightsOffs.absOffset);
-                struct {
-                    for (j=0; j<SubmeshInfo.m_numVertexes; j++) {
-                        FSeek(weightsOffs.absOffset + ReadUInt(indicesOffs.absOffset + j*8 + 4));
-                        // (23 & 1023) | (1227488 & 4194304) << 10
-                        struct weightVert {
-                            local uint weightTotal;
-                            FSeek(indicesOffs.absOffset + j*8);
-                            uint numIDs;
-                            uint offset;
-                            FSeek(weightsOffs.absOffset + offset);
-                            for (w=0; w<numIDs; w++)
-                                struct boneWeight {
-                                    uint value;
-                                    FSkip(-4);
-                                    uint weight : 22;
-                                    uint boneID : 10;
-                                    weightTotal += weight;
-                                } weight <name=ReadBoneWeightName, read=ReadBoneWeightValue, bgcolor=cPurple>;
-                        } vert <name=ReadWeightVertName, read=ReadWeightVert>;
-                    }
-                } BoneIndsWeights;
-                //2396
-                FSeek(startof(weightsOffs)+8);
-            } skinData <size=32>;
-        }
+            }
+        } streamDesc <read=ReadStreamDesc>;
+    }
     
-        FSeek(SubmeshInfo.shaderDescOffs.absOffset);
-        struct shaderDesc {
+    //unknown
+    if (SubmeshInfo.normalsRecalcOffset.offset) {
+        FSeek(SubmeshInfo.normalsRecalcOffset.absOffset);
+        struct {
+            uint numVerts;
+            uint numIndices;
+            pointerFixup ptr1;
+            pointerFixup ptr2;
+            pointerFixup ptr3;
+            pointerFixup ptr4;
+            FSeek(ptr1.absOffset);
             struct {
+                ushort vertIndex[numVerts];
+            } ptr1Indices  <fgcolor=cLtRed>;
+            FSeek(ptr2.absOffset);
+            struct {
+                ushort vertIndex[numVerts];
+            } ptr2Indices  <fgcolor=cLtBlue>;
+            FSeek(ptr3.absOffset);
+            struct {
+                ushort vertIndex[numVerts];
+            } ptr3Indices  <bgcolor=cLtGreen>;
+            FSeek(ptr4.absOffset);
+            struct {
+                ushort vertIndex[numVerts];
+            } ptr4Indices  <bgcolor=cLtYellow>;
+            FSeek(startof(this)+40);
+        } NormalsRecalculation <size=40>;
+    }
+    
+    //weights
+    if (SubmeshInfo.skinDataOffs.offset) {
+        FSeek(SubmeshInfo.skinDataOffs.absOffset);
+        struct {
+            uint ukn, weightCount, ukn;
+            ushort uknShort, uknShort;
+            pointerFixup indicesOffs;
+            pointerFixup weightsOffs;
+            FSeek(weightsOffs.absOffset);
+            struct {
+                for (j=0; j<SubmeshInfo.m_numVertexes; j++) {
+                    FSeek(weightsOffs.absOffset + ReadUInt(indicesOffs.absOffset + j*8 + 4));
+                    // (23 & 1023) | (1227488 & 4194304) << 10
+                    struct weightVert {
+                        local uint weightTotal;
+                        FSeek(indicesOffs.absOffset + j*8);
+                        uint numIDs;
+                        uint offset; 
+                        FSeek(weightsOffs.absOffset + offset);
+                        for (w=0; w<numIDs; w++)
+                            struct boneWeight {
+                                uint value;
+                                FSkip(-4);
+                                uint weight : 22;
+                                uint boneID : 10;
+                                weightTotal += weight;
+                            } weight <name=ReadBoneWeightName, read=ReadBoneWeightValue, bgcolor=cPurple>;
+                    } vert <name=ReadWeightVertName, read=ReadWeightVert>;
+                }
+            } BoneIndsWeights;
+            FSeek(startof(weightsOffs)+8);
+        } skinData <size=32>;
+    }
+
+    FSeek(SubmeshInfo.shaderDescOffs.absOffset);
+    struct shaderDesc {
+        struct {
+            if (isTLOU2) {
+                StringRead shaderAsset(0);
+                StringRead shaderType(0);
+                uint64 UUID;
+                pointerFixup shaderParamsOffs;
+                pointerFixup texHeadersOffs;
+                pointerFixup shaderNamesOffs;
+                pointerFixup uknOffs;
+                pointerFixup fetchMapDescsOffs;
+                uint uknData[52];
+                uint paramCount;
+                uint texCount;
+                uint nameCount;
+                uint fetchMapCount;
+            } else {
                 StringRead shaderAsset(0);
                 StringRead shaderType(0);
                 pointerFixup shaderNamesOffs;
@@ -1279,48 +1357,57 @@ typedef struct //0xB0;
                 uint nameCount;
                 uint paramCount;
                 uint texCount;
-                uint wrinkleDescCount;
+                uint fetchMapCount;
                 uint uknData[34];
-            } ShaderInfo;
-            
-            FSeek(ShaderInfo.shaderNamesOffs.absOffset);
-            if (ShaderInfo.shaderNamesOffs.absOffset)
+            }
+        } ShaderInfo;
+        
+        FSeek(ShaderInfo.shaderNamesOffs.absOffset);
+        if (ShaderInfo.shaderNamesOffs.absOffset)
+            struct {
+                StringRead name(0)[ShaderInfo.nameCount] <optimize=false>;
+            } shaderOptionNames;
+        
+        FSeek(ShaderInfo.shaderParamsOffs.absOffset);
+        if (ShaderInfo.shaderParamsOffs.absOffset)
+            struct {
+                struct materialParam {
+                    StringRead name(0);//[2] <optimize=false>;
+                    pointerFixup valueOffs;
+                    uint64 numFloats;
+                    FSeek(valueOffs.absOffset);
+                    for (w=0; w<numFloats; w++)
+                        float value <fgcolor=cLtGreen>;
+                    FSeek(startof(this)+24);
+                } param[ShaderInfo.paramCount] <optimize=false, read=ReadMaterialParam, name=ReadMaterialParamName, write=WriteMaterialParam>;
+            } shaderParams;
+        
+        FSeek(ShaderInfo.texHeadersOffs.absOffset);
+        if (ShaderInfo.texHeadersOffs.absOffset)
+            struct {
+                struct texHeader {
+                    StringRead name(0);
+                    StringRead path(0);
+                    if (isTLOU2)
+                        uint64 ukn;
+                    pointerFixup texStructOffs;
+                    uint64 ukn64_0, ukn64_1;
+                    FSeek(texStructOffs.absOffset);
+                    struct textureDesc TextureDesc <read=ReadTextureDesc>;
+                    FSeek(startof(ukn64_1)+8);
+                } TexHeader[ShaderInfo.texCount] <optimize=false, read=ReadTexHeader, name=ReadTexHeaderName>;
+            } TexHeaders;
+        
+        FSeek(ShaderInfo.fetchMapDescsOffs.absOffset);
+        if (ShaderInfo.fetchMapDescsOffs.absOffset)
+            struct {
                 struct {
-                    StringRead name(0)[ShaderInfo.nameCount] <optimize=false>;
-                } shaderOptionNames;
-            
-            FSeek(ShaderInfo.shaderParamsOffs.absOffset);
-            if (ShaderInfo.shaderParamsOffs.absOffset)
-                struct {
-                    struct materialParam {
-                        StringRead name(0);//[2] <optimize=false>;
-                        pointerFixup valueOffs;
-                        uint64 numFloats;
-                        FSeek(valueOffs.absOffset);
-                        for (w=0; w<numFloats; w++)
-                            float value <fgcolor=cLtGreen>;
-                        FSeek(startof(this)+24);
-                    } param[ShaderInfo.paramCount] <optimize=false, read=ReadMaterialParam, name=ReadMaterialParamName, write=WriteMaterialParam>;
-                } shaderParams;
-            
-            FSeek(ShaderInfo.texHeadersOffs.absOffset);
-            if (ShaderInfo.texHeadersOffs.absOffset)
-                struct {
-                    struct texHeader {
-                        StringRead name(0);
-                        StringRead path(0);
-                        pointerFixup texStructOffs;
-                        uint64 ukn64, ukn64;
-                        FSeek(texStructOffs.absOffset);
-                        struct textureDesc TextureDesc <read=ReadTextureDesc>;
-                        FSeek(startof(this)+40);
-                    } TexHeader[ShaderInfo.texCount] <optimize=false, read=ReadTexHeader, name=ReadTexHeaderName>;
-                } TexHeaders;
-            
-            FSeek(ShaderInfo.fetchMapDescsOffs.absOffset);
-            if (ShaderInfo.fetchMapDescsOffs.absOffset)
-                struct {
-                    struct {
+                    if (isTLOU2) {
+                        uint64 hash;
+                        pointerFixup uknOffs;
+                        uint ukn0;
+                        uint ukn1;
+                    } else {
                         uint64 hash;
                         uint hash2;
                         uint ukn;
@@ -1328,7 +1415,7 @@ typedef struct //0xB0;
                         uint count;
                         pointerFixup FetchMapsOffs;
                         FSeek(FetchMapsOffs.absOffset);
-                        if (FetchMapsOffs.absOffset && count)
+                        if (FetchMapsOffs.absOffset && count && count*16+FTell() < FileSize())
                             struct {
                                 struct wrinkleMap {
                                     uint texHeaderIndex, thisIndex;
@@ -1336,16 +1423,17 @@ typedef struct //0xB0;
                                 } FetchMap[count] <optimize=false, read=ReadWrinkleMap>;
                             } FetchMaps;
                         FSeek(startof(this)+32);
-                    } FetchMapsDesc[ShaderInfo.wrinkleDescCount] <optimize=false>;
-                } FetchMapsDescs;
-            FSeek(startof(this)+208);
-        } Material <size=208>;
-    }
+                    }
+                } FetchMapsDesc[ShaderInfo.fetchMapCount] <optimize=false>;
+            } FetchMapsDescs;
+        FSeek(startof(this)+208);
+    } Material <size=208>;
+    
     FSeek(SubmeshInfo.m_pIndexes.absOffset);
     struct {
         ushort A, B, C;
     } faces[SubmeshInfo.m_numIndexes/3] <fgcolor=cYellow>;
-    SetForeColor(cNone);
+    SetBackColor(cNone);
         
     FSeek(startof(SubmeshInfo)+sizeof(SubmeshInfo));
 } SubMeshDesc <read=ReadSubMeshDesc>;
@@ -1357,13 +1445,21 @@ typedef struct //0xB0;
     }
 
     string ReadStreamDesc(StreamDesc &s) {
-        return ReadFloatDesc(s.compInfo);
+        if (exists(s.compInfo))
+            return ReadFloatDesc(s.compInfo);
+        if (exists(s.T2compInfo))
+            return ReadT2FloatDesc(s.T2compInfo);
+        return "";
     }
 
     string ReadFloatDesc(FloatDesc &f) {
-        //SPrintf(s, "%i", f.m_floatType);
         return EnumToString(f.m_floatType);
     }
+    string ReadT2FloatDesc(T2FloatDesc &f) {
+        SPrintf(s, "%i - %s", f.m_floatType, EnumToString(f.m_floatType));
+        return s;
+    }
+
 
     string ReadBoneWeight(uint w) {
         SPrintf(s, "%f", (float)(w / 4194304.0));
@@ -1439,6 +1535,26 @@ typedef struct //0xB0;
         else
             SScanf(array, fmtString, m.value[0]);
     }
+    
+    string ReadTLOU2Vert(TLOU2Vert &v) {
+        local string s;
+        if (exists(v.Z)) {
+            SPrintf(s, "%g %g %g", v.X, v.Y, v.Z); return s;
+        } /*else if (exists(v.Y)) {
+            SPrintf(s, "%g %g", v.X, v.Y); return s;
+        } else if (exists(v.X)) {
+            SPrintf(s, "%g", v.X); return s;
+        }*/
+        //if (parentof(v).T2compInfo.m_stride == 4)
+        SPrintf(s, "%g", (uint)(v.x) * parentof(v).qScale[0] + parentof(v).qOffs[0]);
+        if (exists(v.y))
+            SPrintf(s, "%s, %g", s, (uint)(v.y) * parentof(v).qScale[1] + parentof(v).qOffs[1]);
+        if (exists(v.z)) 
+            SPrintf(s, "%s, %g", s, (uint)(v.z) * parentof(v).qScale[2] + parentof(v).qOffs[2]);
+        if (exists(v.w)) 
+            SPrintf(s, "%s, %g", s, (uint)(v.w) * parentof(v).qScale[3] + parentof(v).qOffs[3]);
+        return s;
+    }
 
 for (i=0; i<Header.m_pageCt; i++) {
     FSeek(PakPageEntry[i].m_resPageOffset);
@@ -1447,9 +1563,16 @@ for (i=0; i<Header.m_pageCt; i++) {
 
 FSeek(PakPageEntry[Header.m_pageCt-1].m_resPageOffset + PakPageEntry[Header.m_pageCt-1].m_pageSize);
 
-struct {
-    //FSkip(FileSize()-FTell()-1);
-    FSkip(Header.m_datasize-1);
-    ubyte end;
-} TextureData;
+if (Header.m_datasize)
+    struct {
+        //FSkip(FileSize()-FTell()-1);
+        FSkip(Header.m_datasize-1);
+        ubyte end;
+    } TextureData;
 
+if (geoStart) {
+    FSkip(-1);
+    BLANK spacer;
+    FSeek(geoStart);
+    struct GEOMETRY_1 Geometry;
+}
