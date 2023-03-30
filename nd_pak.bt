@@ -3,12 +3,12 @@
 //
 //      File: nd_pak.bt
 //   Authors: alphaZomega
-//   Version: 0.4
+//   Version: 0.5
 //   Purpose: Reads Naughty Dog pak files
 //  Category: 
 // File Mask: *.pak
 //  ID Bytes: 79 0A 00 00
-//   History: February 26, 2023
+//   History: March 30, 2023
 //    Thanks: icemesh
 //------------------------------------------------
 LittleEndian();
@@ -20,6 +20,7 @@ local string s <hidden=true>;
 local uint start <hidden=true>;
 local uint geoStart <hidden=true>;
 local ubyte isTLOU2 <hidden=true> = false;
+local ubyte isTLOUP1 <hidden=true> = false;
 local ubyte isModded <hidden=true> = false;
 
 local uint numPointerFixups <hidden=1> = ReadUInt(ReadUInt(28)+8);
@@ -85,6 +86,8 @@ void alignString() {
 struct  //size 0x2C
 {
 	uint32 m_magic;					    //0x0 0x00000A79
+    if (m_magic == 2685 || m_magic == 68221)
+        isTLOUP1 = true;
 	uint32 m_hdrSize;					//0x4 header size
 	uint32 m_pakLoginTableIdx;		    //0x8 idx of the page storing the PAK_LOGIN_TABLE
 	uint32 m_pakLoginTableOffset;		//0xC relative offset PAK_LOGIN_TABLE = PakPageHeader + m_pakLoginTableOffset; //its a ResItem 
@@ -95,15 +98,22 @@ struct  //size 0x2C
 	uint32 m_datasize;			        //0x20 size of texture section after all the pages
 	uint32 m_unk6;					    //0x24 no idea
 	uint32 m_unk7;					    //0x28 no idea
+    int uknTLOUP1[4];
+    
+
     start = m_hdrSize + m_hdrSize % 16; 
     //local uint64 m_textureBaseOffset = m_hdrSize + m_pageCt << 19;
 } Header;
 
+
+FSeek(Header.m_pPakPageEntryTable);
 struct  //0xC 
 {
 	uint32 m_resPageOffset;						//0x0 absolute offset to the ResPage
 	uint32 m_pageSize;							//0x4 page size
 	uint32 m_owningPackageIndex;		        //0x8 
+    //if (Header.m_magic == 2685)
+    //    uint32 ukn;
 } PakPageEntry[Header.m_pageCt];
 
 int getPFWaypointIndex(uint32 tell) { 
@@ -391,21 +401,22 @@ typedef struct  {
             ubyte end;
         } ImageData;
     FSeek(startof(path) + sizeof(path));
-} VRAM_DESC  <read=ReadVRamDesc>;
+} _VRAM_DESC  <read=ReadVRamDesc>;
 
 typedef struct {
     uint64 vramCount;
-    struct sVRAMs {
-        struct {
-            pointerFixup Pointer[vramCount] <optimize=false>;
-        } Pointers;
-        for (j=0; j<vramCount; j++) {
-            FSeek(Pointers.Pointer[j].absOffset + 32);
-            VRAM_DESC VRAM;
-        }
-        FSeek(startof(this)+sizeof(Pointers));
-    } VRAMs <size=SizeVRAMs>;
-} VRAM_DESC_TABLE;
+    if (vramCount > 0)
+        struct sVRAMs {
+            struct {
+                pointerFixup Pointer[vramCount] <optimize=false>;
+            } Pointers;
+            for (j=0; j<vramCount; j++) {
+                FSeek(Pointers.Pointer[j].absOffset + 32);
+                _VRAM_DESC VRAM;
+            }
+            FSeek(startof(this)+sizeof(Pointers));
+        } VRAMs <size=SizeVRAMs>;
+} _VRAM_DESC_TABLE;
 
     int SizeVRAMs(sVRAMs &v) { return vramCount * 8; } 
 
@@ -424,35 +435,41 @@ typedef struct  {
     } TextureNames;
     for (j=0; j<m_numTextureEntries; j++) {
         FSeek(Pointers.Pointer[j].absOffset);
-        struct VRAM_DESC VRAM;
+        struct _VRAM_DESC VRAM;
     }
     FSeek(startof(Pointers) + sizeof(Pointers));
     
-} TEXTURE_TABLE;
+} _TEXTURE_TABLE;
 
 typedef struct  {
     if (!exists(loginCount)) {
+        //if (isTLOUP1 && Header.m_magic == 68221)
+        //    FSeek(m_unkPtr + startof(m_unkPtr) + 16);
         uint loginCount;
         uint32 padding;
         local ubyte ct <hidden=true>;
         struct { 
             uint32 page;
             uint32 offset;
-        } LoginTableEntry[loginCount-1];
+        } LoginTableEntry[loginCount];
         uint32 ukn, ukn;
         FSeek(startof(LoginTableEntry[0]));
-        struct loginTable {
-            for (ct=0; ct<loginCount-1; ct++) {
+        typedef struct {
+            for (ct=0; ct<loginCount; ct++) {
                 FSeek(LoginTableEntry[ct].offset + PakPageEntry[LoginTableEntry[ct].page].m_resPageOffset);
                 start = PakPageEntry[LoginTableEntry[ct].page].m_resPageOffset;
                 if (FTell() < FileSize() )
                     struct ResItem login <name=ReadResItemName>;
             }
             FSeek(startof(LoginTableEntry)+loginCount*8);
-        } LoginTable <size=8>;
+        } loginTable;
+        if (isTLOUP1)
+            loginTable LoginTable;
+        else
+            loginTable LoginTable <size=8>;
         FSeek(startof(LoginTableEntry)+loginCount*8);
     }
-} PAK_LOGIN_TABLE;
+} _PAK_LOGIN_TABLE;
 
 typedef struct {
     pointerFixup effectStart;
@@ -475,7 +492,7 @@ typedef struct {
     
 
     FSeek(startof(this)+8);
-} EFFECT;
+} _EFFECT;
 
 typedef struct  {
     uint effectCount;
@@ -515,7 +532,7 @@ typedef struct  {
         } names;
     FSeek(startof(namesTableOffs)+8);
     
-} EFFECT_TABLE <size=8>;
+} _EFFECT_TABLE <size=8>;
 
 typedef struct {
     pointerFixup startOffs;
@@ -560,51 +577,192 @@ typedef struct {
 
     
    // pointerFixup ptr[16] <optimize=false>;
-} SKELETON_FLIPDATA;
+} _SKELETON_FLIPDATA;
+
+typedef struct {
+    uint64 ukn64;
+    pointerFixup listOffset;
+    uint listCount, ukn;
+    pointerFixup list2Offset;
+    uint list2Count, ukn;
+    uint64 uknI64[24];
+    FSeek(listOffset.absOffset);
+    struct {
+        struct {
+            pointerFixup offset[listCount] <optimize=false>;
+        } pointers;
+        for (j=0;j<listCount; j++) {
+            FSeek(pointers.offset[j].absOffset);
+            struct ListInfo {
+                float position[4];
+                float rotation[4];
+                StringRead name(0);
+                uint hash;
+                int ukn0;
+                uint64 ukn64[4];
+                float uknFlt;
+                int ukn1;
+                pointerFixup parentSpawnerGroupAddress;
+                uint64 ukn64_2;
+                pointerFixup offs2;
+                uint64 ukn64_3[3];
+                FSeek(offs2.absOffset);
+                pointerFixup listValueOffset;
+                uint64 count;
+                FSeek(listValueOffset.absOffset);
+                struct ListValueEntry {
+                    int hash;
+                    int ukn1;
+                    pointerFixup offs;
+                    FSeek(offs.absOffset);
+                    struct ListValue {
+                        ushort valueType, uknShort1;
+                        int ukn4;
+                        pointerFixup valueOffs;
+                        FSeek(valueOffs.absOffset);
+                        switch(valueType) {
+                            case 1:
+                                int value; break;
+                            case 4:
+                                float value; break;
+                            case 5:
+                                uint64 stringOffset; 
+                                FSeek(start + stringOffset);
+                                string value;
+                                break;
+                            case 8:
+                                float value, value, value, value; break;
+                            case 9:
+                                uint value, value, value; break;
+                            case 13:
+                                uint value; break;
+                            default:
+                                Print("asdf %i\n", asdf); break;
+                        }
+                        FSeek(startof(this)+16);
+                    } listValue <read=ReadListValue>;
+                    FSeek(startof(this)+16);
+                } entry[count] <read=ReadListValueEntry, optimize=false>;
+            } listInfo <read=ReadListInfo>;
+        }
+            
+    } list1;
+    FSeek(list2Offset.absOffset);
+    struct {
+        struct List2Entry {
+            uint hash;
+            uint ukn;
+            pointerFixup offset;
+            FSeek(offset.absOffset);
+            struct ListInfo listInfo <read=ReadListInfo>;
+            FSeek(startof(this)+16);
+        } list2Entry [list2Count] <optimize=false, read=ReadList2Entry>;
+    } list2;
+} _SPAWNER_GROUP <fgcolor=cGreen>;
+
+    string ReadListInfo(ListInfo &L) { return L.name.str; }
+
+    string ReadList2Entry(List2Entry &L) { return ReadListInfo(L.listInfo); }
+
+    string ReadListValueEntry(ListValueEntry &L) { return ReadListValue(L.listValue); }
+
+    string ReadListValue(ListValue &v) {
+        local ubyte i = 1;
+        if (exists(v.stringOffset))
+            return v.value;
+        local string fmtStr = (v.valueType == 4 || v.valueType ==8) ? "%g" : "%i";
+        SPrintf(s, fmtStr, v.value);
+        while(exists(v.value[i])) {
+            SPrintf(s, "%s, " + fmtStr, s, v.value[i]);
+            i++;
+        }
+        return s;
+    }
 
 typedef struct  //0x20 
 {
-	StringRead m_itemNameOffset(start);	//0x0 item name. relative offset PakPageHeader + m_itemNameOffset;
-	StringRead m_itemTypeOffset(start);	//0x8 item type name. relative offset PakPageHeader + m_itemTypeOffset; PM_COLLECTION_2 || RAW_DATA etc
-	uint32 m_unkNumber;	
-    
-    if (ReadUInt(FTell()+12)==74565) {
-        uint32  m_unused[7] <bgcolor=cYellow>;
-        isTLOU2 = true;
+    local string itemType <hidden=true>;
+    if (isTLOUP1) {
+	    uint64 m_unkPtr;						    //0x0 
+	    uint64 m_unused;							//0x8 always 0x0001234500012345
+	    uint32 m_pageSize;						    //0x10 size from the end of the PakPageHeader
+	    uint32 m_unused2;							//0x14 0x00012345
+	    uint64 m_unk;								//0x18 always 0x0?
+        enum <uint64> TP1_sID {
+            JOINT_HIERARCHY_Tp1 = 0x50CAF5257D6A140B,
+            GEOMETRY_1_Tp1 = 0x349D779A792F45C1,
+            VRAM_DESC_Tp1 = 0xCE3ADE693131B309,
+            VRAM_DESC_TABLE_Tp1 = 0xE7254422A7A8F476,
+            TEXTURE_TABLE_Tp1 = 0xA2481DA1A5D2CE2B,
+            PAK_LOGIN_TABLE_Tp1 = 0x4903731234F1BEA6,
+            EFFECT_TABLE_Tp1 = 0x61DE7E6141BC6F2B,
+            SPAWNER_GROUP_Tp1 = 0x460F497540A29F73,
+            TAG_INT_Tp1 = 0x596A72779C4C87D,
+            ANIM_GROUP_Tp1 = 0x53DE1E1977F9CBA4,
+            MATERIAL_TABLE_1_Tp1 = 0x791137002DB17EBB,
+            FOREGROUND_SECTION_2_Tp1 = 0x384ADF724B123839,
+            COLLISION_DATA_CLOTH_Tp1 = 0x5ADB4A2D2E2A6EB,
+            TAG_VEC4_Tp1 = 0x3A3BB43D817C93DE,
+            TAG_FLOAT_Tp1 = 0x35EB8812D3A2D576,
+            LEVEL_BOUNDING_BOX_DATA_Tp1 = 0x6A98005088A56C5,
+            AMBSHADOWS_OCCLUDER_INFO_Tp1 = 0x438E1B0DBFFAA93,
+            COLLISION_DATA_FOREGROUND_Tp1 = 0x7D9BFD5CEC879080,
+            SOUND_BANK_TABLE_Tp1 = 0xEC3AFEDF7EF282F0,
+            TEXTURE_DICTIONARY_Tp1 = 0x36125D3CFB7F3991,
+        } m_itemNameId;                             //0x20 StringId64 of the item name				
+	    uint64 m_unused3;							//0x28 always 0x0001234500012345
+        itemType = EnumToString(m_itemNameId);
+        itemType = StrDel(itemType, sizeof(itemType)-5, 5);
+        
     } else {
-        uint32 m_unused[3] <bgcolor=cYellow>;				//0x14 always 00 01 23 45 
+	    StringRead m_itemNameOffset(start);	//0x0 item name. relative offset PakPageHeader + m_itemNameOffset;
+	    StringRead m_itemTypeOffset(start);	//0x8 item type name. relative offset PakPageHeader + m_itemTypeOffset; PM_COLLECTION_2 || RAW_DATA etc
+	    uint32 m_unkNumber;	
+        if (ReadUInt(FTell()+12)==74565) {
+            uint32  m_unused[7] <bgcolor=cYellow>;
+            isTLOU2 = true;
+        } else {
+            uint32 m_unused[3] <bgcolor=cYellow>;				//0x14 always 00 01 23 45 
+        }
+        itemType = m_itemTypeOffset.str;
     }
-
-    switch(m_itemTypeOffset.str) {
-        case "GEOMETRY_1":
+    switch(itemType) {
+        case "GEOMETRY_1": //0x349D779A792F45C1 
             geoStart = FTell();
-            struct GEOMETRY_1 Geometry <size=112>;
+            struct _GEOMETRY_1 Geometry <size=112>;
             break;
-        case "JOINT_HIERARCHY":
+        case "JOINT_HIERARCHY": //0x50CAF5257D6A140B 
             jointsPageId = i;
             jointsDescId = l;
-            struct JOINT_HIERARCHY Joints;
+            struct _JOINT_HIERARCHY Joints;
             break;
-        case "VRAM_DESC":
-            struct VRAM_DESC VRAM <read=ReadVRamDesc>;
+        case "VRAM_DESC": //0xCE3ADE693131B309 
+            struct _VRAM_DESC VRAM <read=ReadVRamDesc>;
             break;
-        case "VRAM_DESC_TABLE":
-            struct VRAM_DESC_TABLE VRAMTable;
+        case "VRAM_DESC_TABLE": //0xE7254422A7A8F476 
+            struct _VRAM_DESC_TABLE VRAMTable;
             break;
-        case "TEXTURE_TABLE":
-            struct TEXTURE_TABLE TextureTable;
+        case "TEXTURE_TABLE": //0xA2481DA1A5D2CE2B 
+            struct _TEXTURE_TABLE TextureTable;
+            break;
+        case "TEXTURE_DICTIONARY":
+            struct _TEXTURE_TABLE TextureDict;
             break;
         case "PAK_LOGIN_TABLE":
-            struct PAK_LOGIN_TABLE PakLogin;
+            struct _PAK_LOGIN_TABLE PakLogin;
             break;
         case "SKELETON_FLIPDATA":
-            struct SKELETON_FLIPDATA FlipData;
-        case "EFFECT_TABLE":
-            struct EFFECT_TABLE Effect_Table;
+            struct _SKELETON_FLIPDATA FlipData;
+        case "EFFECT_TABLE": //0x61DE7E6141BC6F2B 
+            struct _EFFECT_TABLE Effect_Table;
+            break;
+        case "SPAWNER_GROUP": //0x460F497540A29F73 
+            struct _SPAWNER_GROUP Spawner_Group;
             break;
         default:
             break;
     }
+
     
     FSeek(startof(m_unused)+sizeof(m_unused));
     if (ReadUInt64(FTell()+20) != 320254236500805) {
@@ -625,7 +783,7 @@ typedef struct  //0x20
                     } else
                         int uknInt;
                 }
-            } Test <size=28>;
+            } Test <size=32>;
         }
     }
 } ResItem <read=ReadResItem>;//, name=ReadResItemName>;
@@ -633,18 +791,18 @@ typedef struct  //0x20
     string ReadResItem(ResItem &r) { 
         if (exists(r.Item) && r.m_itemTypeOffset.str == "VRAM_DESC")
             return ReadVRamDesc(r.Item.VRAM);
-        return r.m_itemNameOffset.str; 
+        return r.itemType; 
     }
     
-    string ReadResItemName(ResItem &r) { return r.m_itemTypeOffset.str; }
+    string ReadResItemName(ResItem &r) { return r.itemType; }
     
     int GetSizeTest(TEST &t) { return mySize; }
 
-    string ReadVRamDesc(VRAM_DESC &v) { return v.path; }
+    string ReadVRamDesc(_VRAM_DESC &v) { return v.path; }
 
 typedef struct //0x10 
 {
-	StringRead m_name(start);	//0x0 same as the ResItem name... This field is usually used by animations
+    StringRead m_name(start);	            //0x0 same as the ResItem name... This field is usually used by animations
 	uint32 m_resItemOffset;					//0x8 relative offset. -> ResItem = PakPageHeader + m_pakLoginItemOffset
 	uint32 m_padding;						//0xC always 00 01 23 45
     FSeek(m_resItemOffset + start);
@@ -663,11 +821,21 @@ typedef struct //0x10
 typedef struct //0x14
 {
     start = startof(this);
-	uint64 m_unused;							//0x0	0xDEADBEEFDEADBEEF
-	uint32 m_unk;								//0x8	always 0 ?
-	uint32 m_pageSize;							//0xC	size maybe from the start of PakPageHeader
-	uint16 m_packageOwningIndex;				//0x10
-	uint16 m_numPageHeaderEntries;				//0x12	number of pointers in the table
+    if (ReadUInt64() != 16045690984833335023) {
+        isTLOUP1 = true;
+        uint32 m_pageSize;
+        uint32 m_packageOwningIndex;
+        uint32 ukn[10];
+        uint32 m_numPageHeaderEntries;
+        
+        //uint asd[24];
+    } else {
+	    uint64 m_unused;							//0x0	0xDEADBEEFDEADBEEF
+	    uint32 m_unk;								//0x8	always 0 ?
+	    uint32 m_pageSize;							//0xC	size maybe from the start of PakPageHeader
+	    uint16 m_packageOwningIndex;				//0x10
+	    uint16 m_numPageHeaderEntries;				//0x12	number of pointers in the table
+    }
     if (m_numPageHeaderEntries)
         for (l=0; l<m_numPageHeaderEntries; l++)
             ResPageEntry PageEntry;
@@ -705,14 +873,15 @@ typedef struct {
             uint ukn;
             pointerFixup groupsOffset;
             FSeek(groupsOffset.absOffset);
-            struct {
+            if (numRiggingGroups)
                 struct {
-                    StringRead name(0);
-                    uint uknInt, uknInt, uknInt;
-                    float uknFlt;
-                } RiggingGroup[numRiggingGroups] <optimize=false>;
-            } RiggingGroups;
-            if (riggingGroupsNamesOffs.absOffset) {
+                    struct {
+                        StringRead name(0);
+                        uint uknInt, uknInt, uknInt;
+                        float uknFlt;
+                    } RiggingGroup[numRiggingGroups] <optimize=false>;
+                } RiggingGroups;
+            if (numRiggingGroups && riggingGroupsNamesOffs.absOffset) {
                 FSeek(riggingGroupsNamesOffs.absOffset);
                 struct {
                     struct {
@@ -883,7 +1052,7 @@ typedef struct {
 
     FSeek(startof(namesOffset)+8);
     
-} JOINT_HIERARCHY;
+} _JOINT_HIERARCHY;
 
     string ReadBoneTransform(boneTransform &b) { return parentof(parentof(b)).names.name[b.idx].str; }
     
@@ -921,7 +1090,7 @@ typedef struct
     pointerFixup uknFloatsOffs;
     pointerFixup materialDescsOffs;
     
-    if (!isTLOU2) {
+    if (!isTLOU2 && !isTLOUP1) {
         FSeek(LODDescsOffs.absOffset);
 	    struct LODDESCS {
             local uint totalVertCount, totalIndexCount;
@@ -1036,7 +1205,7 @@ typedef struct
         } vector[10];
     } UknFloats;*/
     FSeek(startof(materialDescsOffs)+16);
-} GEOMETRY_1;
+} _GEOMETRY_1;
 
     string ReadParam(Param &p) { return p.paramName2.str; }
     
@@ -1044,24 +1213,11 @@ typedef struct
 
     int sizeLODDESCS(LODDESCS &l) { return m_LODCount*8; }
 
-
-string GetSFix(int x, ubyte exp) {
-    local int c = Abs(x);
-    local byte sign = 1; 
-    if (x < 0) {
-        c = x - 1;
-        c = ~c;
-        sign = -1;
-    }
-    SPrintf(s, "%g", ( (1.0 * c) / Pow(2, exp) ) * sign);
-    return s;
-}
-
 typedef struct //0xB0; 
 {
     struct {
         local uint index <hidden=1> = (FTell() - startof(parentof(this))) / 176;
-        if (isTLOU2) {
+        if (isTLOU2 || isTLOUP1) {
             float bbox[8];
             StringRead      m_name(0);
             uint64          ukn;
@@ -1140,7 +1296,7 @@ typedef struct //0xB0;
 
     for (j=0; j<SubmeshInfo.m_numStreamSource; j++) {
         struct StreamDesc {
-            if (isTLOU2) {
+            if (isTLOU2 || isTLOUP1) {
                 pointerFixup m_bufferOffset;
                 uint numVerts;
                 uint bitStride;
@@ -1181,6 +1337,8 @@ typedef struct //0xB0;
                     struct TLOU2Vert {
                         if (T2compInfo.m_floatType == 0) {
                             float X, Y, Z;
+                        } else if (T2compInfo.m_floatType == 1 || T2compInfo.m_floatType == 11) {
+                            hfloat X, Y;
                         } else {
                             uint64 x : sizes[0];
                             uint64 y : sizes[1];
@@ -1332,7 +1490,7 @@ typedef struct //0xB0;
     FSeek(SubmeshInfo.shaderDescOffs.absOffset);
     struct shaderDesc {
         struct {
-            if (isTLOU2) {
+            if (isTLOU2 || isTLOUP1) {
                 StringRead shaderAsset(0);
                 StringRead shaderType(0);
                 uint64 UUID;
@@ -1346,6 +1504,9 @@ typedef struct //0xB0;
                 uint texCount;
                 uint nameCount;
                 uint fetchMapCount;
+                if (isTLOUP1) {
+                    uint64 ukn, ukn;
+                }
             } else {
                 StringRead shaderAsset(0);
                 StringRead shaderType(0);
@@ -1388,7 +1549,7 @@ typedef struct //0xB0;
                 struct texHeader {
                     StringRead name(0);
                     StringRead path(0);
-                    if (isTLOU2)
+                    if (isTLOU2 || isTLOUP1)
                         uint64 ukn;
                     pointerFixup texStructOffs;
                     uint64 ukn64_0, ukn64_1;
@@ -1402,7 +1563,7 @@ typedef struct //0xB0;
         if (ShaderInfo.fetchMapDescsOffs.absOffset)
             struct {
                 struct {
-                    if (isTLOU2) {
+                    if (isTLOU2 || isTLOUP1) {
                         uint64 hash;
                         pointerFixup uknOffs;
                         uint ukn0;
@@ -1540,12 +1701,10 @@ typedef struct //0xB0;
         local string s;
         if (exists(v.Z)) {
             SPrintf(s, "%g %g %g", v.X, v.Y, v.Z); return s;
-        } /*else if (exists(v.Y)) {
+        }
+        if (exists(v.Y)) {
             SPrintf(s, "%g %g", v.X, v.Y); return s;
-        } else if (exists(v.X)) {
-            SPrintf(s, "%g", v.X); return s;
-        }*/
-        //if (parentof(v).T2compInfo.m_stride == 4)
+        }
         SPrintf(s, "%g", (uint)(v.x) * parentof(v).qScale[0] + parentof(v).qOffs[0]);
         if (exists(v.y))
             SPrintf(s, "%s, %g", s, (uint)(v.y) * parentof(v).qScale[1] + parentof(v).qOffs[1]);
@@ -1556,9 +1715,15 @@ typedef struct //0xB0;
         return s;
     }
 
-for (i=0; i<Header.m_pageCt; i++) {
-    FSeek(PakPageEntry[i].m_resPageOffset);
-    ResPage Page;
+if (isTLOUP1) {
+    FSeek(PakPageEntry[Header.m_pakLoginTableIdx].m_resPageOffset + Header.m_pakLoginTableOffset);
+    start = PakPageEntry[Header.m_pakLoginTableIdx].m_resPageOffset;
+    ResItem PakLoginTable;
+} else {
+    for (i=0; i<Header.m_pageCt; i++) {
+        FSeek(PakPageEntry[i].m_resPageOffset);
+        ResPage Page;
+    }
 }
 
 FSeek(PakPageEntry[Header.m_pageCt-1].m_resPageOffset + PakPageEntry[Header.m_pageCt-1].m_pageSize);
@@ -1574,5 +1739,5 @@ if (geoStart) {
     FSkip(-1);
     BLANK spacer;
     FSeek(geoStart);
-    struct GEOMETRY_1 Geometry;
+    struct _GEOMETRY_1 Geometry;
 }
